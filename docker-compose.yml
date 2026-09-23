@@ -1,0 +1,405 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SIGTPI v2.0  —  Docker Compose (entorno de desarrollo local)
+# Comando: docker compose up --build
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: sigtpi
+
+x-common-env: &common-env
+  ENVIRONMENT: development
+  DEBUG: "true"
+  LOG_LEVEL: INFO
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: sigtpi
+  POSTGRES_PASSWORD: sigtpi_dev
+  POSTGRES_DB: sigtpi
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_PASSWORD: ""
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: 5672
+  RABBITMQ_USER: sigtpi
+  RABBITMQ_PASSWORD: sigtpi_dev
+  RABBITMQ_VHOST: sigtpi
+  JWT_SECRET_KEY: "dev_secret_change_in_prod_min32chars!!"
+  JWT_ALGORITHM: HS256
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 480
+  CORS_ORIGINS: "http://localhost:3000,http://localhost:8080"
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks:
+    - sigtpi-internal
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_started
+  environment:
+    <<: *common-env
+  healthcheck:
+    disable: true
+
+x-build-context: &build-context
+  context: .
+  args:
+    BUILDKIT_INLINE_CACHE: "1"
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sigtpi-postgres
+    restart: unless-stopped
+    networks: [sigtpi-internal]
+    environment:
+      POSTGRES_USER: sigtpi
+      POSTGRES_PASSWORD: sigtpi_dev
+      POSTGRES_DB: sigtpi
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sigtpi -d sigtpi"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: sigtpi-redis
+    restart: unless-stopped
+    networks: [sigtpi-internal]
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: sigtpi-rabbitmq
+    restart: unless-stopped
+    networks: [sigtpi-internal]
+    environment:
+      RABBITMQ_DEFAULT_USER: sigtpi
+      RABBITMQ_DEFAULT_PASS: sigtpi_dev
+      RABBITMQ_DEFAULT_VHOST: sigtpi
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # Management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 20s
+      timeout: 15s
+      retries: 30
+      start_period: 120s
+
+  # ── API Gateway ─────────────────────────────────────────────────────────────
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: sigtpi-gateway
+    restart: unless-stopped
+    networks: [sigtpi-internal]
+    ports:
+      - "8080:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - auth-service
+      - user-service
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Microservices ──────────────────────────────────────────────────────────
+
+  auth-service:
+    <<: *service-defaults
+    container_name: sigtpi-auth
+    build:
+      <<: *build-context
+      dockerfile: services/auth-service/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: auth-service
+    volumes:
+      - ./services/auth-service/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+
+  user-service:
+    <<: *service-defaults
+    container_name: sigtpi-users
+    build:
+      <<: *build-context
+      dockerfile: services/user-service/Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: user-service
+    volumes:
+      - ./services/user-service/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+
+  academic-registry:
+    <<: *service-defaults
+    container_name: sigtpi-academic
+    build:
+      <<: *build-context
+      dockerfile: services/academic-registry/Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: academic-registry
+    volumes:
+      - ./services/academic-registry/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+
+  tutoring-service:
+    <<: *service-defaults
+    container_name: sigtpi-tutoring
+    build:
+      <<: *build-context
+      dockerfile: services/tutoring-service/Dockerfile
+    ports:
+      - "8004:8004"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: tutoring-service
+    volumes:
+      - ./services/tutoring-service/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+
+  ti-management:
+    <<: *service-defaults
+    container_name: sigtpi-ti
+    build:
+      <<: *build-context
+      dockerfile: services/ti-management/Dockerfile
+    ports:
+      - "8005:8005"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: ti-management
+      DELAY_ALERT_LEVEL1_DAYS: "7"
+      DELAY_ALERT_LEVEL2_DAYS: "0"
+      DELAY_ALERT_LEVEL3_DAYS: "14"
+      DELAY_ALERT_LEVEL4_DAYS: "30"
+    volumes:
+      - ./services/ti-management/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+
+  session-service:
+    <<: *service-defaults
+    container_name: sigtpi-sessions
+    build:
+      <<: *build-context
+      dockerfile: services/session-service/Dockerfile
+    ports:
+      - "8006:8006"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: session-service
+    volumes:
+      - ./services/session-service/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+
+  evaluation-service:
+    <<: *service-defaults
+    container_name: sigtpi-evaluation
+    build:
+      <<: *build-context
+      dockerfile: services/evaluation-service/Dockerfile
+    ports:
+      - "8007:8007"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: evaluation-service
+    volumes:
+      - ./services/evaluation-service/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+
+  document-service:
+    <<: *service-defaults
+    container_name: sigtpi-documents
+    build:
+      <<: *build-context
+      dockerfile: services/document-service/Dockerfile
+    ports:
+      - "8008:8008"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: document-service
+      FILE_STORAGE_PATH: /app/storage
+      MAX_UPLOAD_SIZE_MB: "200"
+    volumes:
+      - ./services/document-service/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+      - document-storage:/app/storage
+
+  similarity-service:
+    <<: *service-defaults
+    container_name: sigtpi-similarity
+    build:
+      <<: *build-context
+      dockerfile: services/similarity-service/Dockerfile
+    ports:
+      - "8009:8009"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: similarity-service
+      SIMILARITY_THRESHOLD_PERCENT: "20"
+    volumes:
+      - ./services/similarity-service/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+
+  notification-service:
+    <<: *service-defaults
+    container_name: sigtpi-notifications
+    build:
+      <<: *build-context
+      dockerfile: services/notification-service/Dockerfile
+    ports:
+      - "8010:8010"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: notification-service
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+      SMTP_FROM_EMAIL: noreply@sigtpi.local
+      SMTP_FROM_NAME: SIGTPI
+    volumes:
+      - ./services/notification-service/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+
+  report-service:
+    <<: *service-defaults
+    container_name: sigtpi-reports
+    build:
+      <<: *build-context
+      dockerfile: services/report-service/Dockerfile
+    ports:
+      - "8011:8011"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: report-service
+    volumes:
+      - ./services/report-service/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+
+  pki-service:
+    <<: *service-defaults
+    container_name: sigtpi-pki
+    build:
+      <<: *build-context
+      dockerfile: services/pki-service/Dockerfile
+    ports:
+      - "8012:8012"
+    environment:
+      <<: *common-env
+      SERVICE_NAME: pki-service
+    volumes:
+      - ./services/pki-service/app:/app/app
+      - ./shared/sigtpi_common:/app/shared/sigtpi_common
+      - pki-data:/app/certs
+
+  # ── Dev tools ──────────────────────────────────────────────────────────────
+
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: sigtpi-frontend
+    restart: unless-stopped
+    networks: [sigtpi-internal]
+    ports:
+      - "3000:80"
+    depends_on:
+      - auth-service
+      - user-service
+      - ti-management
+      - session-service
+      - notification-service
+      - report-service
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: sigtpi-mailhog
+    restart: unless-stopped
+    networks: [sigtpi-internal]
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sigtpi-prometheus
+    restart: unless-stopped
+    networks: [sigtpi-internal]
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sigtpi-grafana
+    restart: unless-stopped
+    networks: [sigtpi-internal]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: sigtpi_dev
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on: [prometheus]
+
+# ── Networks & Volumes ────────────────────────────────────────────────────────
+
+networks:
+  sigtpi-internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.90.0/24
+
+volumes:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:
+  document-storage:
+  pki-data:
+  prometheus-data:
+  grafana-data:

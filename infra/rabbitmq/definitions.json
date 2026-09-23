@@ -1,0 +1,60 @@
+{
+  "rabbit_version": "3.13.0",
+  "rabbitmq_version": "3.13.0",
+  "users": [
+    {
+      "name": "sigtpi",
+      "password": "sigtpi_dev",
+      "tags": "administrator"
+    }
+  ],
+  "vhosts": [{"name": "sigtpi"}],
+  "permissions": [
+    {
+      "user": "sigtpi",
+      "vhost": "sigtpi",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "sigtpi.events",
+      "vhost": "sigtpi",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "sigtpi.dlx",
+      "vhost": "sigtpi",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {"name": "notification.email",    "vhost": "sigtpi", "durable": true, "auto_delete": false, "arguments": {"x-dead-letter-exchange": "sigtpi.dlx"}},
+    {"name": "notification.platform", "vhost": "sigtpi", "durable": true, "auto_delete": false, "arguments": {"x-dead-letter-exchange": "sigtpi.dlx"}},
+    {"name": "similarity.analysis",   "vhost": "sigtpi", "durable": true, "auto_delete": false, "arguments": {"x-dead-letter-exchange": "sigtpi.dlx"}},
+    {"name": "report.generate",       "vhost": "sigtpi", "durable": true, "auto_delete": false, "arguments": {"x-dead-letter-exchange": "sigtpi.dlx"}},
+    {"name": "ti.delay.check",        "vhost": "sigtpi", "durable": true, "auto_delete": false, "arguments": {"x-dead-letter-exchange": "sigtpi.dlx"}},
+    {"name": "sigtpi.dlx.queue",      "vhost": "sigtpi", "durable": true, "auto_delete": false, "arguments": {}}
+  ],
+  "bindings": [
+    {"source": "sigtpi.events", "vhost": "sigtpi", "destination": "notification.email",    "destination_type": "queue", "routing_key": "#", "arguments": {}},
+    {"source": "sigtpi.events", "vhost": "sigtpi", "destination": "notification.platform", "destination_type": "queue", "routing_key": "#", "arguments": {}},
+    {"source": "sigtpi.events", "vhost": "sigtpi", "destination": "similarity.analysis",   "destination_type": "queue", "routing_key": "ti.deliverable.uploaded", "arguments": {}},
+    {"source": "sigtpi.events", "vhost": "sigtpi", "destination": "ti.delay.check",        "destination_type": "queue", "routing_key": "ti.*", "arguments": {}},
+    {"source": "sigtpi.dlx",   "vhost": "sigtpi", "destination": "sigtpi.dlx.queue",       "destination_type": "queue", "routing_key": "#", "arguments": {}}
+  ],
+  "policies": [],
+  "parameters": [],
+  "global_parameters": [],
+  "topic_permissions": []
+}
